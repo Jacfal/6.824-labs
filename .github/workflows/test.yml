@@ -18,4 +18,4 @@ jobs:
         go-version: 1.17
 
     - name: Run map reduce lab tests
-      run: main/test-mr.sh
+      run: src/main/test-mr.sh
