@@ -19,5 +19,6 @@ jobs:
 
     - name: Run map reduce lab tests
       run: |
-        chmod u+x src/main/test-mr.sh
-        src/main/test-mr.sh
+        cd src/main/
+        chmod u+x test-mr.sh
+        ./test-mr.sh
