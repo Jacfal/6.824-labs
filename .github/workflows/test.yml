@@ -17,11 +17,12 @@ jobs:
       with:
         go-version: 1.17
         
-    - name: Install dependencies
-      run: go get github.com/google/uuid
+#     - name: Install dependencies
+#       run: go get github.com/google/uuid
 
     - name: Run map reduce lab tests
       run: |
+        go get github.com/google/uuid
         cd src/main/
         chmod u+x test-mr.sh
         ./test-mr.sh
