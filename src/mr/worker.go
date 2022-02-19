@@ -1,10 +1,27 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
+import (
+	"fmt"
+	"encoding/json"
+	"hash/fnv"
+	"io/ioutil"
+	"log"
+	"net/rpc"
+	"os"
+	"sort"
+	"time"
+	"github.com/google/uuid"
+)
 
+var workerId = uuid.New().String()
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // Map functions return a slice of KeyValue.
@@ -12,6 +29,14 @@ import "hash/fnv"
 type KeyValue struct {
 	Key   string
 	Value string
+}
+
+var emptyTask = Task {
+	IsEmpty: true,
+}
+
+func logworkermessage(message string) {
+	log.Printf("worker: %s -> %s", workerId, message)
 }
 
 //
@@ -24,6 +49,18 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+func readFile(filename string) string {
+	file, err := os.Open(filename)
+	if err != nil {
+		logworkermessage(fmt.Sprintf("cannot open %v", filename))
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		logworkermessage(fmt.Sprintf("cannot read %v", filename))
+	}
+	file.Close()
+	return string(content)
+}
 
 //
 // main/mrworker.go calls this function.
@@ -32,39 +69,120 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
+	task := GetTask()
 
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
+	if task.Operation == mapOperation {
+		logworkermessage(fmt.Sprintf("Applying map (id %v) function to file %s", task.OpId, task.Files))
+		taskfilename := task.Files[0] // only head file is relevant for map operation
 
+		nreducefiles := make([]*os.File, task.NReduce)
+		filenames := make([]string, task.NReduce)
+		for i := 0; i < task.NReduce; i++ {
+			ifilename := fmt.Sprintf("mr-%v-%v", task.OpId, i)
+			filenames[i] = ifilename
+			ifile, _ := os.Create(ifilename)
+			nreducefiles[i] = ifile
+		}
+
+		for _, kv := range mapf(taskfilename, readFile(taskfilename)) {
+			currentreducefileindex := ihash(kv.Key) % task.NReduce
+			file := nreducefiles[currentreducefileindex]
+			enc := json.NewEncoder(file)
+			err := enc.Encode(&kv)
+			if err != nil {
+				logworkermessage(fmt.Sprintf("Error during encoding"))
+			}
+		}
+
+		// close all
+		for i := 0; i < task.NReduce; i++ {
+			nreducefiles[i].Close()
+		}
+
+		TaskComplete(task, filenames)
+
+	} else if task.Operation == reduceOperation {
+		logworkermessage(fmt.Sprintf("Applying reduce (id %v) function to files %s", task.OpId, task.Files))
+
+		kva := []KeyValue{}
+		for i := 0; i < (len(task.Files)); i++ {
+			file, err := os.Open(task.Files[i])
+			if err != nil {
+				logworkermessage(fmt.Sprintf("cannot open filename for reduce %v", task.Files[i]))
+			} else {
+				dec := json.NewDecoder(file)
+				for {
+					var kv KeyValue
+					if err := dec.Decode(&kv); err != nil {
+						break
+					}
+					kva = append(kva, kv)
+				}
+			}
+			file.Close()
+		}
+
+		// sort
+		logworkermessage("Sorting files")
+		sort.Sort(ByKey(kva))
+
+		oname := fmt.Sprintf("mr-out-%v", task.OpId)
+		ofile, _ := os.Create(oname)
+
+		// reduce
+		i := 0
+		for i < len(kva) {
+			j := i + 1
+			for j < len(kva) && kva[j].Key == kva[i].Key {
+				j++
+			}
+			values := []string{}
+			for k := i; k < j; k++ {
+				values = append(values, kva[k].Value)
+			} 
+			output := reducef(kva[i].Key, values)
+			
+			// save in the correct format
+			fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+			i = j
+		}
+
+		ofile.Close()
+		
+		// task has been completed, remove intermediate files
+		for i := 0; i < (len(task.Files)); i++ {
+			os.Remove(task.Files[i])
+		}
+
+		logworkermessage(fmt.Sprintf("Task %s complete, contacting coordinator", task.Id))
+		TaskComplete(task, []string{ oname })
+
+	} else {
+		logworkermessage(fmt.Sprintf("Nothing to do. Waiting for the next task..."))
+		time.Sleep(1000 * time.Millisecond)
+
+	}
+
+	Worker(mapf, reducef) // repeat 
 }
 
-//
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
+func GetTask() Task {
+	args := GetTaskArgs{ WorkerId: workerId }
+	reply := GetTaskReply{}
 
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
+	ok := call("Coordinator.CreateTask", &args, &reply)
 	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
+		return reply.TaskToDo
 	} else {
-		fmt.Printf("call failed!\n")
+		log.Printf("call failed!")
+		return emptyTask
 	}
+}
+
+func TaskComplete(task Task, outputFiles []string) bool {
+	args := TaskCompleteArgs { CompletedTask: task, OutputFiles: outputFiles }
+	reply := TaskCompleteReply{}
+	return call("Coordinator.TaskComplete", &args, &reply)
 }
 
 //
