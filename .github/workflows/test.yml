@@ -22,3 +22,8 @@ jobs:
         cd src/main/
         chmod u+x test-mr.sh
         ./test-mr.sh
+
+    - name: Run 2A raft leader election tests
+      run: |
+        cd src/raft/
+        for i in $(seq 1 10); do go test -run TestManyElections2A; done
