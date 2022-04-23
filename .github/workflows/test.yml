@@ -26,4 +26,4 @@ jobs:
     - name: Run 2A raft leader election tests
       run: |
         cd src/raft/
-        for i in $(seq 1 10); do go test -run TestManyElections2A; done
+        for i in $(seq 1 10); do go test -run 2A; done
