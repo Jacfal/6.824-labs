@@ -203,12 +203,15 @@ func (rf* Raft) AppendEntriesHandler(request *AppendEntriesRequest, reply *Appen
 	if (rf.state == Candidate) {
 		RichDebug(dVote, rf.me, "AppendEntries received, converting back to follower state")
 		rf.state = Follower
-	} else if (rf.currentTerm < request.Term) {
+	}
+	
+	if (rf.currentTerm < request.Term) {
 		RichDebug(dVote, rf.me, "Received message with higher term %d > %d. Converting to follower if not", request.Term, rf.currentTerm)
 		rf.currentTerm = request.Term
 		rf.state = Follower
 	}
 
+	reply.Success = true
 	rf.mu.Unlock()
 	rf.resetTicker()
 }
@@ -220,7 +223,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	RichDebug(dVote, rf.me, "New vote has been requested; my term = %d, request term %d", rf.currentTerm, args.Term)
+	RichDebug(dVote, rf.me, "New vote has been requested; my term = %d, request term = %d", rf.currentTerm, args.Term)
 
 	if (rf.currentTerm < args.Term) {
 		RichDebug(dVote, rf.me, "Voting for %d", args.CandidateId)
@@ -233,12 +236,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 func (rf *Raft) startElectionTerm() bool {	
 	majority := int32((len(rf.peers) / 2) + 1)
+	rf.resetVotes()
 
 	rf.mu.Lock()
-	RichDebug(dTerm, rf.me, "Starting new election term (term: %d, majority: %d)", rf.currentTerm, majority)
 	rf.state = Candidate
 	rf.currentTerm = rf.currentTerm + 1
 	requestVote := RequestVoteArgs { rf.currentTerm, rf.me }
+	RichDebug(dTerm, rf.me, "Starting new election term (term: %d, majority: %d)", rf.currentTerm, majority)
 	rf.mu.Unlock()
 
 	rf.addVote() // vote for myself
@@ -258,11 +262,11 @@ func (rf *Raft) startElectionTerm() bool {
 			} else {
 				RichDebug(dTerm, rf.me, "Vote response from peer %d received (peer term: %d)", peerId, requestReply.Term)
 				rf.mu.Lock()
-				if requestReply.Term == rf.currentTerm && requestReply.VoteGranted {
+				if requestReply.Term == rf.currentTerm && requestReply.VoteGranted && rf.state == Candidate {
 					RichDebug(dTerm, rf.me, "Vote granted from peer %d", peerId)
 					
-					if rf.addVote() >= majority && rf.state == Candidate {
-						RichDebug(dTerm, rf.me, "Peer has been elected as a new leader by majority (%d)", majority)
+					if rf.addVote() >= majority {
+						RichDebug(dTerm, rf.me, "Peer has been elected as a new leader by majority (%d); term = %d", majority, rf.currentTerm)
 						rf.state = Leader
 						go rf.startSendingHeartbeatsToFollowers()	
 					}
@@ -305,6 +309,11 @@ func (rf *Raft) startSendingHeartbeatsToFollowers() {
 
 func (rf *Raft) addVote() int32 { // return current numbers of votes
 	atomic.AddInt32(&rf.votesCount, 1)
+	return atomic.LoadInt32(&rf.votesCount)
+}
+
+func(rf *Raft) resetVotes() int32 {
+	atomic.StoreInt32(&rf.votesCount, 0)
 	return atomic.LoadInt32(&rf.votesCount)
 }
 
